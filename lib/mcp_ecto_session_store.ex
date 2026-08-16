@@ -84,15 +84,12 @@ if Code.ensure_loaded?(Anubis.Server.Session.Store) and Code.ensure_loaded?(Ecto
       # Resolve the repo at boot so a misconfiguration fails fast here rather
       # than surfacing as a save that silently errors and a load that crashes a
       # reconnect. The store itself starts no process (it rides the host repo).
-      resolved_repo = repo()
-      Logger.info("McpEctoSessionStore starting: repo=#{inspect(resolved_repo)}")
+      _ = repo()
       :ignore
     end
 
     @impl Store
     def save(session_id, state, opts) do
-      Logger.info("McpEctoSessionStore.save/3 called: session_id=#{inspect(session_id)}")
-
       now = DateTime.utc_now()
       expires_at = DateTime.add(now, ttl_ms(opts), :millisecond)
 
@@ -109,16 +106,8 @@ if Code.ensure_loaded?(Anubis.Server.Session.Store) and Code.ensure_loaded?(Ecto
         on_conflict: {:replace, [:state, :expires_at, :updated_at]}
       )
       |> case do
-        {:ok, _session} ->
-          Logger.info("McpEctoSessionStore.save/3 succeeded: session_id=#{inspect(session_id)}")
-          :ok
-
-        {:error, changeset} ->
-          Logger.error(
-            "McpEctoSessionStore.save/3 changeset error: session_id=#{inspect(session_id)} errors=#{inspect(changeset.errors)}"
-          )
-
-          {:error, changeset}
+        {:ok, _session} -> :ok
+        {:error, changeset} -> {:error, changeset}
       end
     rescue
       # The sanitizer above should make the insert encodable, but Anubis only
@@ -132,24 +121,16 @@ if Code.ensure_loaded?(Anubis.Server.Session.Store) and Code.ensure_loaded?(Ecto
 
     @impl Store
     def load(session_id, _opts) do
-      Logger.info("McpEctoSessionStore.load/2 called: session_id=#{inspect(session_id)}")
-
       now = DateTime.utc_now()
 
       case repo().get(Session, session_id) do
         nil ->
-          Logger.info("McpEctoSessionStore.load/2 not found: session_id=#{inspect(session_id)}")
           {:error, :not_found}
 
         %Session{expires_at: expires_at, state: state} ->
           if DateTime.after?(expires_at, now) do
-            Logger.info("McpEctoSessionStore.load/2 restored: session_id=#{inspect(session_id)}")
             {:ok, state}
           else
-            Logger.info(
-              "McpEctoSessionStore.load/2 found but expired, reaping: session_id=#{inspect(session_id)} expires_at=#{expires_at}"
-            )
-
             # Reap, but only while still expired: guarding on `expires_at <= now`
             # means a row a concurrent `save/3` refreshed with a future expiry is
             # NOT deleted by this read path.
